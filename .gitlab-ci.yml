@@ -15,7 +15,7 @@ variables:
 
 
       # Джоб по запуску автотестов
-ui_hrm_test:
+api_petstore_test:
   image: maven:3.9.6-amazoncorretto-17
   stage: test
   #флаг указывает что пайплайн продолжит свое выполнение, даже если данная джоба упадет
