@@ -1,8 +1,6 @@
 stages:
   - test
-  - history
   - report
-  - publish_report
 
 variables:
   TEST_GROUPS:
@@ -22,6 +20,7 @@ api_petstore_test:
   #(например - не пройдут тесты)
   allow_failure: true
   script:
+    - echo "${CI_JOB_ID}" > jobid
     - mvn clean test -Dtest.groups=$TEST_GROUPS
   artifacts:
     #'when: always' - мы всегда будем получать артефакты - и в случае успеха, и в случае падения джобы
@@ -29,58 +28,42 @@ api_petstore_test:
     when: always
     paths:
       - target/allure-results
+      - jobid
     expire_in: 1 day
 
-# Собираем результаты, обогащаем историей предыдущих запусков
-accumulate_results:
-  stage: history
-  image: storytel/alpine-bash-curl
-  script:
-    #создаем папку для хранения истории. если такая уже существует - ошибки не будет. (флаг -p)
-    - mkdir -p allure_history
-
-
-#    # устанавливаем архиватор
-#    - apk add unzip
-#    # получаем данные allure-results из предыдущего запуска джобы pages
-#    # - 'curl --location --output artifacts.zip "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/artifacts/master/download?job=pages&job_token=${CI_JOB_TOKEN}"'
-#    - 'curl --location --output artifacts.zip "https://gitlab.com/api/v4/projects/$CI_PROJECT_ID/jobs/artifacts/main/download?job=pages&job_token=$CI_JOB_TOKEN"'
-#    # распаковываем allure-results прошлых прогонов
-#    - unzip artifacts.zip
-#    - chmod -R 777 public
-#    - cp -r ./public/history ./target/allure-results
-
-
-
-    #копируем результаты последнего прогона в папку для хранения истории.
-    - cp -a target/allure-results allure_history/allure_results
-  artifacts:
-    paths:
-      - allure_history
-    expire_in: 1 day
-
-# Генерируем репорт
-generate_report:
+allure:
   stage: report
-  image: simple1elf/allure-docker
   script:
-    - allure generate -c allure_history/allure_results -o allure_history/allure_report
-  artifacts:
-    paths:
-      - allure_history/allure_report
-    expire_in: 1 day
+    - git clone --single-branch --branch gl-pages $CI_PROJECT_URL
 
-# Хостим репорт на GitLab pages
+    - JOB_ID=$(cat jobid)
+    - REPORT=job_${JOB_ID}
+    - CURRENT_BRANCH=${CI_PROJECT_NAME}/public/${CI_COMMIT_REF_NAME}
+    - cp -r ./${CURRENT_BRANCH}/history allure-results || echo "No history"
 
-pages:
-  stage: publish_report
-  script:
-    - mkdir public
-    - mv allure_history/allure_report/* public
-  artifacts:
-    paths:
-      - public
-    when: always
-    expire_in: 1 day
+    #echo "executor.json"
+    - echo '{"name":"GitLabCI","type":"gitlab","reportName":"Allure Report with history",' > executor.json
+    - echo "\"reportUrl\":\"${CI_PAGES_URL}/${CI_COMMIT_REF_NAME}/${REPORT}/\"," >> executor.json
+    - echo "\"buildUrl\":\"${CI_PIPELINE_URL}\"," >> executor.json
+    - echo "\"buildName\":\"GitLab Job Run ${JOB_ID}\",\"buildOrder\":\"${JOB_ID}\"}" >> executor.json
+    #cat executor.json
+    - mv ./executor.json ./allure-results
 
+    - allure generate allure-results -o $REPORT
 
+    - mkdir -p $CURRENT_BRANCH
+    - cp -r $REPORT $CURRENT_BRANCH
+    - cp -r ${REPORT}/history $CURRENT_BRANCH
+#    - cp -r generate_index.py $CI_PROJECT_NAME
+    - cd $CI_PROJECT_NAME
+#    - python3 generate_index.py public
+#    - python3 generate_index.py public/${CI_COMMIT_REF_NAME}
+
+    - git config user.name "Gitlab Runner"
+    - git config user.email ${CI_EMAIL}
+    - >
+      git remote add $CI_PROJECT_NAME 
+      https://oauth2:${ALLURE_GITLAB_PAGES}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git
+    - git add ./public
+    - git commit -m "pipeline_${CI_PIPELINE_ID}_job_${CI_JOB_ID}"
+    - git push -u $CI_PROJECT_NAME
